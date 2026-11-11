@@ -1,0 +1,57 @@
+Subject: [PATCH] udevng: detect bam-dmux embedded modems
+
+Older Qualcomm SoCs (msm8916, msm8974) expose the integrated modem's data channels through the bam-dmux driver as wwan0..wwan7 and QMI over QRTR. Register wwan0 as an embedded qrtrqmi modem.
+---
+ plugins/udevng.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/plugins/udevng.c b/plugins/udevng.c
+index 0d748c87..fcd05243 100644
+--- a/plugins/udevng.c
++++ b/plugins/udevng.c
+@@ -1712,6 +1712,20 @@ static gboolean setup_mhi(struct modem_info *modem)
+ 	return TRUE;
+ }
+ 
++static gboolean setup_bamdmux(struct modem_info *modem)
++{
++	const struct device_info *net;
++
++	DBG("%s", modem->syspath);
++
++	if (!modem->devices)
++		return FALSE;
++
++	net = modem->devices->data;
++
++	return setup_qmi_qrtr(modem, net) == 0;
++}
++
+ static struct {
+ 	const char *name;
+ 	gboolean (*setup)(struct modem_info *modem);
+@@ -1755,6 +1769,7 @@ static struct {
+ 	{ "ehs6",	setup_ehs6		},
+ 	{ "qrtrsoc",	setup_qrtrsoc		},
+ 	{ "mhi",	setup_mhi		},
++	{ "bamdmux",	setup_bamdmux		},
+ 	{ }
+ };
+ 
+@@ -2473,6 +2488,16 @@ static void check_net_device(struct udev_device *device)
+ 		return;
+ 	}
+ 
++	if (parent && l_streq0(udev_device_get_driver(parent), "bam-dmux")) {
++		if (l_streq0(udev_device_get_sysname(device), "wwan0"))
++			add_device(udev_device_get_syspath(parent), NULL,
++					"bamdmux", NULL, NULL,
++					MODEM_TYPE_EMBEDDED, device,
++					"bam-dmux");
++
++		return;
++	}
++
+ 	name = udev_device_get_sysname(device);
+ 	if (l_str_has_prefix(name, "phonet")) {
+ 		add_serial_device(device);

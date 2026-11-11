@@ -23,6 +23,7 @@ Patch13:    0015-voicecall-wakelock.patch
 Patch14:    0016-udevng-wakelock.patch
 Patch16:    0017-hack-slot-remove-support.patch
 Patch17:    0018-add-defines-from-new-kernel.patch
+Patch18:    0019-udevng-detect-bam-dmux-embedded-modems.patch
 
 %define libglibutil_version 1.0.51
 
