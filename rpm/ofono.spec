@@ -25,6 +25,7 @@ Patch16:    0017-hack-slot-remove-support.patch
 Patch17:    0018-add-defines-from-new-kernel.patch
 Patch18:    0019-udevng-detect-bam-dmux-embedded-modems.patch
 Patch19:    0020-gobi-support-embedded-bam-dmux-modems.patch
+Patch20:    0021-gobi-read-the-slot-IMEI-regardless-of-the-ESN.patch
 
 %define libglibutil_version 1.0.51
 

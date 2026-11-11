@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Szczepaniak?= <m.szczepaniak.000@gmail.com>
+Date: Wed, 11 Nov 2026 04:16:08 +0000
+Subject: [PATCH] gobi: read the slot IMEI regardless of the ESN
+
+gobi_get_ids_cb() only looked at the IMEI when the modem reported no
+ESN (or "0"). Modems that report both, like the MSM8974 modem on the
+Moto X 2014 (ESN 8093D413), never stored the IMEI, so the slot was
+never added, ofono_slot_driver_started() was never called and the
+slot manager never became ready.
+
+The slot needs the IMEI in every case, so read it directly. Also stop
+treating user_data as a cb_data: it is the modem, so the old failure
+path dereferenced the wrong type.
+---
+ plugins/gobi.c | 29 +++++++++++++++--------------
+ 1 file changed, 15 insertions(+), 14 deletions(-)
+
+diff --git a/plugins/gobi.c b/plugins/gobi.c
+index e034b9b..bea8c03 100644
+--- a/plugins/gobi.c
++++ b/plugins/gobi.c
+@@ -227,22 +227,23 @@ static int qmi_wwan_set_pass_through(const char *interface, char value)
+ static void gobi_get_ids_cb(struct qmi_result *result, void *user_data)
+ {
+ 	char *str;
+-	struct cb_data *cbd = user_data;
+-	ofono_devinfo_query_cb_t cb = cbd->cb;
+ 
+-	str = qmi_result_get_string(result, QMI_DMS_RESULT_ESN);
+-	if (!str || strcmp(str, "0") == 0) {
+-		str = qmi_result_get_string(result, QMI_DMS_RESULT_IMEI);
+-		if (!str) {
+-			CALLBACK_WITH_FAILURE(cb, NULL, cbd->data);
+-			return;
+-		} else {
+-			ofono_info("Got IMEI %s", str);
+-			l_strlcpy(imei, str, sizeof(imei));
+-			gobi_slot_driver_startup_check();
+-		}
++	if (qmi_result_set_error(result, NULL)) {
++		ofono_warn("Unable to get the modem IDs");
++		return;
+ 	}
+-   l_free(str);
++
++	str = qmi_result_get_string(result, QMI_DMS_RESULT_IMEI);
++	if (!str) {
++		ofono_warn("Modem reported no IMEI");
++		return;
++	}
++
++	ofono_info("Got IMEI %s", str);
++	l_strlcpy(imei, str, sizeof(imei));
++	l_free(str);
++
++	gobi_slot_driver_startup_check();
+ }
+ 
+ /*
+-- 
+2.56.0
+
