@@ -1,0 +1,129 @@
+Subject: [PATCH 2/2] gobi: support embedded bam-dmux modems
+
+Accept Bus=embedded with the bam-dmux network driver: no USB interface number, no qmi_wwan sysfs raw_ip/pass_through switches and no WDA data format setup, which these modems do not support for the bam-dmux path.
+---
+ plugins/gobi.c | 73 ++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 47 insertions(+), 26 deletions(-)
+
+diff --git a/plugins/gobi.c b/plugins/gobi.c
+index 07d1f87d..e034b9bb 100644
+--- a/plugins/gobi.c
++++ b/plugins/gobi.c
+@@ -141,6 +141,7 @@ struct gobi_data {
+ 	uint32_t set_mtu_id;
+ 	enum wda_data_format data_format;
+ 	bool no_pass_through : 1;
++	bool embedded : 1;
+ };
+ 
+ static void gobi_debug(const char *str, void *user_data)
+@@ -276,6 +277,7 @@ static int gobi_probe(struct ofono_modem *modem)
+ 	struct stat st;
+ 	_auto_(l_free) char *pass_through = NULL;
+ 	bool no_pass_through = false;
++	bool embedded;
+ 
+ 	DBG("%p", modem);
+ 
+@@ -290,25 +292,35 @@ static int gobi_probe(struct ofono_modem *modem)
+ 	if (!if_driver || !ifname || !ifindex || !bus)
+ 		return -EPROTO;
+ 
+-	if (!L_IN_STRSET(if_driver, "qmi_wwan"))
+-		return -ENOTSUP;
+-
+-	if (!L_IN_STRSET(bus, "usb"))
+-		return -ENOTSUP;
+-
+-	if (l_safe_atox8(ofono_modem_get_string(modem, "InterfaceNumber"),
+-				&interface_number) < 0)
+-		return -EINVAL;
++	embedded = L_IN_STRSET(if_driver, "bam-dmux") &&
++					L_IN_STRSET(bus, "embedded");
+ 
+-	pass_through = l_strdup_printf(QMI_WWAN_PASS_THROUGH, ifname);
+-	if (stat(pass_through, &st) == -1) {
+-		if (errno == ENOENT)
+-			no_pass_through = true;
+-		else
+-			return -errno;
++	if (embedded) {
++		interface_number = 0;
++		no_pass_through = true;
++	} else {
++		if (!L_IN_STRSET(if_driver, "qmi_wwan"))
++			return -ENOTSUP;
++
++		if (!L_IN_STRSET(bus, "usb"))
++			return -ENOTSUP;
++
++		if (l_safe_atox8(ofono_modem_get_string(modem,
++							"InterfaceNumber"),
++					&interface_number) < 0)
++			return -EINVAL;
++
++		pass_through = l_strdup_printf(QMI_WWAN_PASS_THROUGH, ifname);
++		if (stat(pass_through, &st) == -1) {
++			if (errno == ENOENT)
++				no_pass_through = true;
++			else
++				return -errno;
++		}
+ 	}
+ 
+ 	data = l_new(struct gobi_data, 1);
++	data->embedded = embedded;
+ 	data->main_net_ifindex = ifindex;
+ 	l_strlcpy(data->main_net_name, ifname, sizeof(data->main_net_name));
+ 	data->interface_number = interface_number;
+@@ -860,6 +872,13 @@ static void discover_cb(void *user_data)
+ 	if (data->features & GOBI_UIM)
+ 		add_service_request(data, &data->uim, QMI_SERVICE_UIM);
+ 
++	if (data->embedded) {
++		if (start_service_requests(modem) > 0)
++			return;
++
++		goto error;
++	}
++
+ 	if (qmi_qmux_device_create_client(data->device, QMI_SERVICE_WDA,
+ 						create_wda_cb, modem, NULL))
+ 		return;
+@@ -883,23 +902,25 @@ static void init_powered_down_cb(int error, uint16_t type,
+ 	if (error)
+ 		goto error;
+ 
+-	DBG("Setting QMI_WWAN to 802.3 mode");
++	if (!data->embedded) {
++		DBG("Setting QMI_WWAN to 802.3 mode");
+ 
+-	/* Must set pass_through first, before toggling raw_ip */
+-	if (!data->no_pass_through) {
+-		r = qmi_wwan_set_pass_through(data->main_net_name, 'N');
++		/* Must set pass_through first, before toggling raw_ip */
++		if (!data->no_pass_through) {
++			r = qmi_wwan_set_pass_through(data->main_net_name, 'N');
++			if (r < 0) {
++				ofono_warn("Unable to reset pass_through");
++				goto error;
++			}
++		}
++
++		r = qmi_wwan_set_raw_ip(data->main_net_name, 'N');
+ 		if (r < 0) {
+-			ofono_warn("Unable to reset pass_through");
++			ofono_warn("Unable to reset raw_ip");
+ 			goto error;
+ 		}
+ 	}
+ 
+-	r = qmi_wwan_set_raw_ip(data->main_net_name, 'N');
+-	if (r < 0) {
+-		ofono_warn("Unable to reset raw_ip");
+-		goto error;
+-	}
+-
+ 	//Get a handle to an AT interface if one was found, and attach it to the qmi_device
+ 	GAtChat *atchat = at_util_open_device(modem, "Aux", NULL, "Aux: ", NULL);
+ 	if (!atchat) {
