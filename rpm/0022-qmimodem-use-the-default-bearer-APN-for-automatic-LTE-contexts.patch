@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Szczepaniak?= <m.szczepaniak.000@gmail.com>
+Date: Wed, 11 Nov 2026 04:53:50 +0000
+Subject: [PATCH] qmimodem: use the default bearer APN for automatic LTE
+ contexts
+
+qmi_gprs_read_settings() starts the network for the LTE default bearer
+without an APN, so the modem uses its default profile. On the MSM8974
+modem in the Moto X 2014 that profile has an empty APN while the
+default bearer runs on another profile, and the network rejects the
+request with "multiple-connection-to-same-pdn-not-allowed". The
+context never activates, so on LTE the gprs atom is never Attached.
+
+GET_LTE_ATTACH_PARAMETERS already returns the APN in use. Pass it to
+START_NETWORK so the request binds to the existing default bearer.
+---
+ drivers/qmimodem/gprs-context.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/qmimodem/gprs-context.c b/drivers/qmimodem/gprs-context.c
+index 484cc7d..fdb8d1c 100644
+--- a/drivers/qmimodem/gprs-context.c
++++ b/drivers/qmimodem/gprs-context.c
+@@ -405,13 +405,17 @@ static int start_network(uint8_t iptype, struct gprs_context_data *data,
+ 
+ static void get_lte_attach_param_cb(struct qmi_result *result, void *user_data)
+ {
++	static const uint8_t RESULT_APN = 0x10;
+ 	static const uint8_t RESULT_IP_SUPPORT_TYPE = 0x11;
+ 	struct cb_data *cbd = user_data;
+ 	ofono_gprs_context_cb_t cb = cbd->cb;
+ 	struct ofono_gprs_context *gc = cbd->user;
+ 	struct gprs_context_data *data = ofono_gprs_context_get_data(gc);
++	struct ofono_gprs_primary_context ctx = {};
++	char *apn;
+ 	uint16_t error;
+ 	uint8_t iptype;
++	int r;
+ 
+ 	if (!qmi_result_set_error(result, &error))
+ 		error = 0;
+@@ -424,7 +428,23 @@ static void get_lte_attach_param_cb(struct qmi_result *result, void *user_data)
+ 	if (!qmi_result_get_uint8(result, RESULT_IP_SUPPORT_TYPE, &iptype))
+ 		goto error;
+ 
+-	if (!start_network(iptype, data, NULL, cbd))
++	apn = qmi_result_get_string(result, RESULT_APN);
++
++	if (apn && apn[0] != '\0' && strlen(apn) <= OFONO_GPRS_MAX_APN_LENGTH) {
++		DBG("default bearer APN: %s", apn);
++
++		ctx.cid = data->active_context;
++		strcpy(ctx.apn, apn);
++		ctx.auth_method = OFONO_GPRS_AUTH_METHOD_NONE;
++
++		r = start_network(iptype, data, &ctx, cbd);
++	} else {
++		r = start_network(iptype, data, NULL, cbd);
++	}
++
++	l_free(apn);
++
++	if (!r)
+ 		return;
+ 
+ error:
+-- 
+2.56.0
+
