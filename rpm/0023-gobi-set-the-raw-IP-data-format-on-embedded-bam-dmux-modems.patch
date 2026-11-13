@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Micha=C5=82=20Szczepaniak?= <m.szczepaniak.000@gmail.com>
+Date: Fri, 13 Nov 2026 23:00:19 +0000
+Subject: [PATCH] gobi: set the raw-IP data format on embedded bam-dmux modems
+
+On MSM8974 the data channel defaults to 802.3 framing. The modem only
+answers ARP on it and drops every IP packet, so a data call comes up
+but no traffic passes. The downstream stack (netmgrd) sets the format
+with QMI CTL Set Data Format on every link before starting calls, and
+the bam-dmux driver only carries raw IP.
+
+Add qmi_qmux_device_set_data_format() and use it for embedded modems
+after discovery (the CTL SYNC sent during discovery resets the format),
+requesting raw IP without the QoS header. Verified by hand on a Moto X
+2014: with this format set on the same QMUX connection that starts the
+call, pings get replies and the WDS packet counters move both ways.
+---
+ drivers/qmimodem/qmi.c | 68 ++++++++++++++++++++++++++++++++++++++++++
+ drivers/qmimodem/qmi.h |  6 ++++
+ plugins/gobi.c         | 19 +++++++++++-
+ 3 files changed, 92 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/qmimodem/qmi.c b/drivers/qmimodem/qmi.c
+index 57e4dc7..0bf4e77 100644
+--- a/drivers/qmimodem/qmi.c
++++ b/drivers/qmimodem/qmi.c
+@@ -1508,6 +1508,74 @@ bool qmi_qmux_device_create_client(struct qmi_qmux_device *qmux,
+ 	return true;
+ }
+ 
++struct qmux_set_data_format_request {
++	qmi_qmux_device_set_data_format_func_t func;
++	void *user_data;
++	qmi_destroy_func_t destroy;
++	struct qmi_request super;
++};
++
++static void qmux_set_data_format_request_free(struct qmi_request *r)
++{
++	struct qmux_set_data_format_request *req =
++		l_container_of(r, struct qmux_set_data_format_request, super);
++
++	if (req->destroy)
++		req->destroy(req->user_data);
++
++	l_free(req);
++}
++
++static void qmux_set_data_format_callback(struct qmi_request *r,
++					uint16_t message, uint16_t length,
++					const void *buffer)
++{
++	struct qmux_set_data_format_request *req =
++		l_container_of(r, struct qmux_set_data_format_request, super);
++	const struct qmi_result_code *result_code;
++	uint16_t len;
++	bool success = false;
++
++	result_code = tlv_get(buffer, length, 0x02, &len);
++
++	if (result_code && len == QMI_RESULT_CODE_SIZE)
++		success = L_LE16_TO_CPU(result_code->result) == 0;
++
++	if (req->func)
++		req->func(success, req->user_data);
++}
++
++bool qmi_qmux_device_set_data_format(struct qmi_qmux_device *qmux,
++				bool qos_header, uint16_t link_protocol,
++				qmi_qmux_device_set_data_format_func_t func,
++				void *user_data, qmi_destroy_func_t destroy)
++{
++	unsigned char format_req[] = {
++		0x01, 0x01, 0x00, qos_header ? 0x01 : 0x00,
++		0x10, 0x02, 0x00, link_protocol & 0xff, link_protocol >> 8,
++	};
++	struct qmux_set_data_format_request *req;
++
++	if (!qmux)
++		return false;
++
++	DEBUG(&qmux->debug, "setting data format [qos=%d,link=%u]",
++			qos_header, link_protocol);
++
++	req = __control_request_alloc(QMI_CTL_SET_DATA_FORMAT,
++			format_req, sizeof(format_req),
++			offsetof(struct qmux_set_data_format_request, super));
++	req->super.free_request = qmux_set_data_format_request_free;
++	req->func = func;
++	req->user_data = user_data;
++	req->destroy = destroy;
++
++	__ctl_request_submit(qmux, &req->super,
++					qmux_set_data_format_callback);
++
++	return true;
++}
++
+ static void __qmux_device_free(struct qmi_qmux_device *qmux)
+ {
+ 	l_queue_destroy(qmux->control_queue, __request_free);
+diff --git a/drivers/qmimodem/qmi.h b/drivers/qmimodem/qmi.h
+index b0fc9f2..21b3e2d 100644
+--- a/drivers/qmimodem/qmi.h
++++ b/drivers/qmimodem/qmi.h
+@@ -67,6 +67,8 @@ typedef void (*qmi_qmux_device_discover_func_t)(void *user_data);
+ typedef void (*qmi_qmux_device_create_client_func_t)(struct qmi_service *,
+ 							void *user_data);
+ typedef void (*qmi_qmux_device_shutdown_func_t)(void *user_data);
++typedef void (*qmi_qmux_device_set_data_format_func_t)(bool success,
++							void *user_data);
+ typedef void (*qmi_qrtr_node_lookup_done_func_t)(void *);
+ 
+ typedef void (*qmi_service_result_func_t)(struct qmi_result *, void *);
+@@ -88,6 +90,10 @@ bool qmi_qmux_device_get_service_version(struct qmi_qmux_device *qmux,
+ 					uint16_t type,
+ 					uint16_t *major, uint16_t *minor);
+ bool qmi_qmux_device_has_service(struct qmi_qmux_device *qmux, uint16_t type);
++bool qmi_qmux_device_set_data_format(struct qmi_qmux_device *qmux,
++				bool qos_header, uint16_t link_protocol,
++				qmi_qmux_device_set_data_format_func_t func,
++				void *user_data, qmi_destroy_func_t destroy);
+ int qmi_qmux_device_shutdown(struct qmi_qmux_device *qmux,
+ 				qmi_qmux_device_shutdown_func_t func,
+ 				void *user_data, qmi_destroy_func_t destroy);
+diff --git a/plugins/gobi.c b/plugins/gobi.c
+index bea8c03..a8cc3ef 100644
+--- a/plugins/gobi.c
++++ b/plugins/gobi.c
+@@ -818,6 +818,21 @@ error:
+ 	shutdown_device(modem);
+ }
+ 
++static void embedded_data_format_cb(bool success, void *user_data)
++{
++	struct ofono_modem *modem = user_data;
++
++	DBG("success: %d", success);
++
++	if (!success)
++		ofono_warn("Unable to set the raw-IP data format");
++
++	if (start_service_requests(modem) > 0)
++		return;
++
++	shutdown_device(modem);
++}
++
+ static void discover_cb(void *user_data)
+ {
+ 	struct ofono_modem *modem = user_data;
+@@ -874,7 +889,9 @@ static void discover_cb(void *user_data)
+ 		add_service_request(data, &data->uim, QMI_SERVICE_UIM);
+ 
+ 	if (data->embedded) {
+-		if (start_service_requests(modem) > 0)
++		if (qmi_qmux_device_set_data_format(data->device, false, 0x02,
++						embedded_data_format_cb,
++						modem, NULL))
+ 			return;
+ 
+ 		goto error;
+-- 
+2.56.0
+

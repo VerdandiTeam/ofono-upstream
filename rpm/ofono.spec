@@ -27,6 +27,7 @@ Patch18:    0019-udevng-detect-bam-dmux-embedded-modems.patch
 Patch19:    0020-gobi-support-embedded-bam-dmux-modems.patch
 Patch20:    0021-gobi-read-the-slot-IMEI-regardless-of-the-ESN.patch
 Patch21:    0022-qmimodem-use-the-default-bearer-APN-for-automatic-LTE-contexts.patch
+Patch22:    0023-gobi-set-the-raw-IP-data-format-on-embedded-bam-dmux-modems.patch
 
 %define libglibutil_version 1.0.51
 
